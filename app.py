@@ -1,5 +1,4 @@
-# -*- coding: utf-8 -*-
-import streamlit as st
+mport streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -8,7 +7,6 @@ from scipy.stats import boxcox
 from scipy.special import inv_boxcox
 from sklearn.metrics import mean_squared_error, mean_absolute_error, mean_absolute_percentage_error
 from math import sqrt
-from pmdarima import auto_arima
 
 st.set_page_config(page_title="Peramalan Pengeluaran BSM", layout="wide")
 st.title("📊 Peramalan Pengeluaran Total Mingguan BSM")
@@ -19,20 +17,17 @@ st.sidebar.header("⚙️ Konfigurasi")
 uploaded_file = st.sidebar.file_uploader("📂 Upload file Excel", type=["xlsx", "xls"])
 jenis_data = st.sidebar.radio("📁 Pilih Jenis BSM:", ["Kapal", "Non-Kapal"])
 
-use_auto = st.sidebar.checkbox("☑️ Gunakan Auto SARIMA")
+default_order = (2, 1, 2) if jenis_data == "Non-Kapal" else (1, 1, 1)
+default_seasonal = (1, 1, 1, 52) if jenis_data == "Non-Kapal" else (2, 1, 1, 52)
 
-if not use_auto:
-    default_order = (2, 1, 2) if jenis_data == "Non-Kapal" else (1, 1, 1)
-    default_seasonal = (1, 1, 1, 52) if jenis_data == "Non-Kapal" else (2, 1, 1, 52)
-
-    st.sidebar.markdown("### Parameter SARIMA")
-    p = st.sidebar.number_input("p (AR)", 0, 10, default_order[0])
-    d = st.sidebar.number_input("d (Diff)", 0, 2, default_order[1])
-    q = st.sidebar.number_input("q (MA)", 0, 10, default_order[2])
-    P = st.sidebar.number_input("P (Seasonal AR)", 0, 10, default_seasonal[0])
-    D = st.sidebar.number_input("D (Seasonal Diff)", 0, 2, default_seasonal[1])
-    Q = st.sidebar.number_input("Q (Seasonal MA)", 0, 10, default_seasonal[2])
-    m = st.sidebar.number_input("m (Periode Musiman)", 1, 60, default_seasonal[3])
+st.sidebar.markdown("### Parameter SARIMA")
+p = st.sidebar.number_input("p (AR)", 0, 10, default_order[0])
+d = st.sidebar.number_input("d (Diff)", 0, 2, default_order[1])
+q = st.sidebar.number_input("q (MA)", 0, 10, default_order[2])
+P = st.sidebar.number_input("P (Seasonal AR)", 0, 10, default_seasonal[0])
+D = st.sidebar.number_input("D (Seasonal Diff)", 0, 2, default_seasonal[1])
+Q = st.sidebar.number_input("Q (Seasonal MA)", 0, 10, default_seasonal[2])
+m = st.sidebar.number_input("m (Periode Musiman)", 1, 60, default_seasonal[3])
 
 st.sidebar.markdown("### Pengaturan Evaluasi")
 rolling_window = st.sidebar.number_input("Periode Rolling", 4, 52, 12)
@@ -66,64 +61,45 @@ if uploaded_file:
             try:
                 ts_boxcox, lam = boxcox(ts_original)
 
-                if use_auto:
-                    st.toast("Menjalankan auto_arima()... mohon tunggu", icon="🤖")
-                    auto_model = auto_arima(
-                        ts_boxcox,
-                        start_p=1, start_q=1,
-                        max_p=5, max_q=5,
-                        start_P=0, start_Q=0,
-                        max_P=3, max_Q=3,
-                        d=1, D=1,
-                        seasonal=True, m=52,
-                        stepwise=True,
-                        suppress_warnings=True, error_action='ignore')
-                    p, d, q = auto_model.order
-                    P, D, Q, m = auto_model.seasonal_order
-                    st.info(f"Auto SARIMA memilih order = ({p},{d},{q}) seasonal_order = ({P},{D},{Q},{m})")
+                model_insample = SARIMAX(ts_boxcox, order=(p,d,q), seasonal_order=(P,D,Q,m), trend='c',
+                                         enforce_stationarity=False, enforce_invertibility=False)
+                results_insample = model_insample.fit(disp=False)
 
-                    forecast_bc = auto_model.predict(n_periods=forecast_horizon)
-                    forecast_final = inv_boxcox(forecast_bc, lam)
-                else:
-                    model_insample = SARIMAX(ts_boxcox, order=(p,d,q), seasonal_order=(P,D,Q,m), trend='c',
-                                             enforce_stationarity=False, enforce_invertibility=False)
-                    results_insample = model_insample.fit(disp=False)
+                in_sample_pred = results_insample.fittedvalues
+                in_sample_pred_original = pd.Series(inv_boxcox(in_sample_pred, lam), index=ts_original.index)
+                actual_train_original = pd.Series(inv_boxcox(ts_boxcox, lam), index=ts_original.index)
 
-                    in_sample_pred = results_insample.fittedvalues
-                    in_sample_pred_original = pd.Series(inv_boxcox(in_sample_pred, lam), index=ts_original.index)
-                    actual_train_original = pd.Series(inv_boxcox(ts_boxcox, lam), index=ts_original.index)
+                in_sample_pred_shifted = in_sample_pred_original.shift(-1)[2:-1]
+                actual_train_aligned = actual_train_original[2:-1]
 
-                    in_sample_pred_shifted = in_sample_pred_original.shift(-1)[2:-1]
-                    actual_train_aligned = actual_train_original[2:-1]
+                start_point = len(ts_boxcox) - rolling_window
+                predictions, actuals = [], []
 
-                    start_point = len(ts_boxcox) - rolling_window
-                    predictions, actuals = [], []
+                for i in range(rolling_window):
+                    train_rolling = ts_boxcox[:start_point + i]
+                    model = SARIMAX(train_rolling, order=(p,d,q), seasonal_order=(P,D,Q,m), trend='c',
+                                    enforce_stationarity=False, enforce_invertibility=False)
+                    results = model.fit(disp=False)
+                    pred_bc = results.forecast(steps=1)
+                    pred_real = inv_boxcox(pred_bc[0], lam)
+                    predictions.append(pred_real)
+                    actuals.append(ts_original.iloc[start_point + i])
 
-                    for i in range(rolling_window):
-                        train_rolling = ts_boxcox[:start_point + i]
-                        model = SARIMAX(train_rolling, order=(p,d,q), seasonal_order=(P,D,Q,m), trend='c',
-                                        enforce_stationarity=False, enforce_invertibility=False)
-                        results = model.fit(disp=False)
-                        pred_bc = results.forecast(steps=1)
-                        pred_real = inv_boxcox(pred_bc[0], lam)
-                        predictions.append(pred_real)
-                        actuals.append(ts_original.iloc[start_point + i])
+                predictions_shifted = pd.Series(predictions).shift(-1)
+                actuals_series = pd.Series(actuals)
+                rolling_index = ts_original.index[start_point : start_point + len(actuals_series)]
+                df_eval = pd.DataFrame({'actual': actuals_series.values, 'predicted': predictions_shifted.values},
+                                       index=rolling_index).dropna()
 
-                    predictions_shifted = pd.Series(predictions).shift(-1)
-                    actuals_series = pd.Series(actuals)
-                    rolling_index = ts_original.index[start_point : start_point + len(actuals_series)]
-                    df_eval = pd.DataFrame({'actual': actuals_series.values, 'predicted': predictions_shifted.values},
-                                           index=rolling_index).dropna()
+                mae = mean_absolute_error(df_eval['actual'], df_eval['predicted'])
+                rmse = sqrt(mean_squared_error(df_eval['actual'], df_eval['predicted']))
+                mape = mean_absolute_percentage_error(df_eval['actual'], df_eval['predicted'])
 
-                    mae = mean_absolute_error(df_eval['actual'], df_eval['predicted'])
-                    rmse = sqrt(mean_squared_error(df_eval['actual'], df_eval['predicted']))
-                    mape = mean_absolute_percentage_error(df_eval['actual'], df_eval['predicted'])
-
-                    model_future = SARIMAX(ts_boxcox, order=(p,d,q), seasonal_order=(P,D,Q,m), trend='c',
-                                           enforce_stationarity=False, enforce_invertibility=False)
-                    results_future = model_future.fit(disp=False)
-                    forecast_bc = results_future.forecast(steps=forecast_horizon)
-                    forecast_final = inv_boxcox(forecast_bc, lam)
+                model_future = SARIMAX(ts_boxcox, order=(p,d,q), seasonal_order=(P,D,Q,m), trend='c',
+                                       enforce_stationarity=False, enforce_invertibility=False)
+                results_future = model_future.fit(disp=False)
+                forecast_bc = results_future.forecast(steps=forecast_horizon)
+                forecast_final = inv_boxcox(forecast_bc, lam)
 
                 forecast_index = pd.date_range(start=ts_original.index[-1] + pd.Timedelta(weeks=1),
                                                periods=forecast_horizon, freq='W-MON')
@@ -131,11 +107,10 @@ if uploaded_file:
 
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=ts_original.index, y=ts_original, name='Actual', line=dict(color='blue')))
-                if not use_auto:
-                    fig.add_trace(go.Scatter(x=in_sample_pred_shifted.index, y=in_sample_pred_shifted,
-                                             name='In-Sample Prediction', line=dict(color='red')))
-                    fig.add_trace(go.Scatter(x=df_eval.index, y=df_eval['predicted'],
-                                             name='Rolling Forecast', line=dict(color='green', dash='dash')))
+                fig.add_trace(go.Scatter(x=in_sample_pred_shifted.index, y=in_sample_pred_shifted,
+                                         name='In-Sample Prediction', line=dict(color='red')))
+                fig.add_trace(go.Scatter(x=df_eval.index, y=df_eval['predicted'],
+                                         name='Rolling Forecast', line=dict(color='green', dash='dash')))
                 fig.add_trace(go.Scatter(x=forecast_series.index, y=forecast_series,
                                          name='Forecast (Next)', line=dict(color='orange', dash='dot')))
                 fig.update_layout(title='🔮 Timeline Prediksi',
@@ -145,34 +120,30 @@ if uploaded_file:
                                   template='plotly_white')
                 st.plotly_chart(fig, use_container_width=True)
 
-                if not use_auto:
-                    st.markdown("### 📏 Evaluasi Rolling Forecast")
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("MAPE", f"{mape:.2%}")
-                    col2.metric("MAE", f"Rp {mae:,.0f}")
-                    col3.metric("RMSE", f"Rp {rmse:,.0f}")
+                st.markdown("### 📏 Evaluasi Rolling Forecast")
+                col1, col2, col3 = st.columns(3)
+                col1.metric("MAPE", f"{mape:.2%}")
+                col2.metric("MAE", f"Rp {mae:,.0f}")
+                col3.metric("RMSE", f"Rp {rmse:,.0f}")
 
                 # === Tambahan Tabel dan KDE Error Forecast ===
                 st.markdown("### 🔍 Detail Forecast Mingguan")
                 forecast_df = pd.DataFrame({"Tanggal": forecast_series.index.strftime('%Y-%m-%d'),
                                             "Forecast": forecast_series.values})
 
-                if not use_auto:
-                    df_eval['error'] = df_eval['actual'] - df_eval['predicted']
-                    in_sample_error = actual_train_aligned - in_sample_pred_shifted
-                    col_kde, col_table = st.columns([2, 1])
-                    with col_kde:
-                        kde_fig = go.Figure()
-                        kde_fig.add_trace(go.Histogram(x=df_eval['error'], histnorm='probability', name='Rolling Error', opacity=0.6))
-                        kde_fig.add_trace(go.Histogram(x=in_sample_error, histnorm='probability', name='In-sample Error', opacity=0.6))
-                        kde_fig.update_layout(barmode='overlay', title='Distribusi Error Model', template='simple_white')
-                        st.plotly_chart(kde_fig, use_container_width=True)
-                    with col_table:
-                        st.dataframe(forecast_df.style.format({"Forecast": "Rp {:,.0f}"}), use_container_width=True, height=400)
-                else:
+                df_eval['error'] = df_eval['actual'] - df_eval['predicted']
+                in_sample_error = actual_train_aligned - in_sample_pred_shifted
+                col_kde, col_table = st.columns([2, 1])
+                with col_kde:
+                    kde_fig = go.Figure()
+                    kde_fig.add_trace(go.Histogram(x=df_eval['error'], histnorm='probability', name='Rolling Error', opacity=0.6))
+                    kde_fig.add_trace(go.Histogram(x=in_sample_error, histnorm='probability', name='In-sample Error', opacity=0.6))
+                    kde_fig.update_layout(barmode='overlay', title='Distribusi Error Model', template='simple_white')
+                    st.plotly_chart(kde_fig, use_container_width=True)
+                with col_table:
                     st.dataframe(forecast_df.style.format({"Forecast": "Rp {:,.0f}"}), use_container_width=True, height=400)
 
             except Exception as e:
                 st.error(f"❌ Gagal proses model: {e}")
 else:
-    st.info("⬅️ Upload file Excel dulu dari sidebar.")
+    st.info("⬅️ Upload file Excel di sidebar.")
