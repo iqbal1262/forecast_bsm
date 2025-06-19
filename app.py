@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -15,19 +16,19 @@ st.title("📊 Peramalan Pengeluaran Total Mingguan BSM")
 st.sidebar.header("⚙️ Konfigurasi")
 
 uploaded_file = st.sidebar.file_uploader("📂 Upload file Excel", type=["xlsx", "xls"])
-jenis_data = st.sidebar.radio("📁 Pilih Jenis BSM:", ["Kapal", "Non-Kapal"])
+jenis_data = st.sidebar.radio("🗭 Pilih Jenis BSM:", ["Kapal", "Non-Kapal"])
 
-default_order = (2, 1, 2) if jenis_data == "Non-Kapal" else (1, 1, 1)
-default_seasonal = (1, 1, 1, 52) if jenis_data == "Non-Kapal" else (2, 1, 1, 52)
+def_order = (2, 1, 2) if jenis_data == "Non-Kapal" else (1, 1, 1)
+def_seasonal = (1, 1, 1, 52) if jenis_data == "Non-Kapal" else (2, 1, 1, 52)
 
 st.sidebar.markdown("### Parameter SARIMA")
-p = st.sidebar.number_input("p (AR)", 0, 10, default_order[0])
-d = st.sidebar.number_input("d (Diff)", 0, 2, default_order[1])
-q = st.sidebar.number_input("q (MA)", 0, 10, default_order[2])
-P = st.sidebar.number_input("P (Seasonal AR)", 0, 10, default_seasonal[0])
-D = st.sidebar.number_input("D (Seasonal Diff)", 0, 2, default_seasonal[1])
-Q = st.sidebar.number_input("Q (Seasonal MA)", 0, 10, default_seasonal[2])
-m = st.sidebar.number_input("m (Periode Musiman)", 1, 60, default_seasonal[3])
+p = st.sidebar.number_input("p (AR)", 0, 10, def_order[0])
+d = st.sidebar.number_input("d (Diff)", 0, 2, def_order[1])
+q = st.sidebar.number_input("q (MA)", 0, 10, def_order[2])
+P = st.sidebar.number_input("P (Seasonal AR)", 0, 10, def_seasonal[0])
+D = st.sidebar.number_input("D (Seasonal Diff)", 0, 2, def_seasonal[1])
+Q = st.sidebar.number_input("Q (Seasonal MA)", 0, 10, def_seasonal[2])
+m = st.sidebar.number_input("m (Periode Musiman)", 1, 60, def_seasonal[3])
 
 st.sidebar.markdown("### Pengaturan Evaluasi")
 rolling_window = st.sidebar.number_input("Periode Rolling", 4, 52, 12)
@@ -56,6 +57,12 @@ if uploaded_file:
             y=ts_original.values,
             labels={'x': 'Tanggal', 'y': 'Total (Rp)'}
         ), use_container_width=True)
+
+        # Deskriptif 1 baris dengan tanggal + styling kecil
+        col_min, col_max, col_mean = st.columns(3)
+        col_min.markdown(f"<div style='font-size:0.85rem;'>Minimum<br><strong>Rp {ts_original.min():,.0f}</strong><br>{ts_original.idxmin().strftime('%Y-%m-%d')}</div>", unsafe_allow_html=True)
+        col_max.markdown(f"<div style='font-size:0.85rem;'>Maximum<br><strong>Rp {ts_original.max():,.0f}</strong><br>{ts_original.idxmax().strftime('%Y-%m-%d')}</div>", unsafe_allow_html=True)
+        col_mean.markdown(f"<div style='font-size:0.85rem;'>Rata-rata<br><strong>Rp {ts_original.mean():,.0f}</strong></div>", unsafe_allow_html=True)
 
         if run_forecast:
             try:
@@ -126,20 +133,21 @@ if uploaded_file:
                 col2.metric("MAE", f"Rp {mae:,.0f}")
                 col3.metric("RMSE", f"Rp {rmse:,.0f}")
 
-                # === Tambahan Tabel dan KDE Error Forecast ===
                 st.markdown("### 🔍 Detail Forecast Mingguan")
                 forecast_df = pd.DataFrame({"Tanggal": forecast_series.index.strftime('%Y-%m-%d'),
                                             "Forecast": forecast_series.values})
 
-                df_eval['error'] = df_eval['actual'] - df_eval['predicted']
-                in_sample_error = actual_train_aligned - in_sample_pred_shifted
+                df_eval['error_rolling'] = df_eval['actual'] - df_eval['predicted']
+                error_in_sample = actual_train_aligned - in_sample_pred_shifted
+
                 col_kde, col_table = st.columns([2, 1])
                 with col_kde:
-                    kde_fig = go.Figure()
-                    kde_fig.add_trace(go.Histogram(x=df_eval['error'], histnorm='probability', name='Rolling Error', opacity=0.6))
-                    kde_fig.add_trace(go.Histogram(x=in_sample_error, histnorm='probability', name='In-sample Error', opacity=0.6))
-                    kde_fig.update_layout(barmode='overlay', title='Distribusi Error Model', template='simple_white')
-                    st.plotly_chart(kde_fig, use_container_width=True)
+                    fig_error = go.Figure()
+                    fig_error.add_trace(go.Histogram(x=df_eval['error_rolling'], name="Rolling Error", opacity=0.6))
+                    fig_error.add_trace(go.Histogram(x=error_in_sample, name="In-sample Error", opacity=0.6))
+                    fig_error.update_layout(title="Distribusi Error", barmode="overlay",
+                                            template="simple_white", legend=dict(x=0.8, y=0.95))
+                    st.plotly_chart(fig_error, use_container_width=True)
                 with col_table:
                     st.dataframe(forecast_df.style.format({"Forecast": "Rp {:,.0f}"}), use_container_width=True, height=400)
 
